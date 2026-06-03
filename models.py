@@ -38,4 +38,5 @@ class Trip(Base):
     other_expenses = Column(Float, default=0.0)
     
     status = Column(String, default="Active") # Active or Completed
-    created_at = Column(DateTime, default=datetime.utcnow)
+   from datetime import date
+trip_date = Column(Date, default=date.today)
