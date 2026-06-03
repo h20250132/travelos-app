@@ -16,12 +16,12 @@ class Trip(Base):
     
     id = Column(Integer, primary_key=True, index=True)
     customer_name = Column(String)
-    customer_phone = Column(String, nullable=True) # New field
+    customer_phone = Column(String, nullable=True)
     
     # Split Route into From and To
-    from_location = Column(String, nullable=True) # New field
-    to_location = Column(String, nullable=True)   # New field
-    pickup_location = Column(String, nullable=True) # New field
+    from_location = Column(String, nullable=True)
+    to_location = Column(String, nullable=True)
+    pickup_location = Column(String, nullable=True)
     
     driver_name = Column(String, default="Ravi")
     
@@ -38,5 +38,4 @@ class Trip(Base):
     other_expenses = Column(Float, default=0.0)
     
     status = Column(String, default="Active") # Active or Completed
-   from datetime import date
-trip_date = Column(Date, default=date.today)
+    created_at = Column(DateTime, default=datetime.utcnow)
