@@ -11,10 +11,11 @@ from fastapi.staticfiles import StaticFiles
 from sqlalchemy.orm import Session
 
 import models
-from database import Engine, SessionLocal
+# 🌟 FIXED: Changed 'Engine' to 'engine' to match your database file exactly
+from database import engine, SessionLocal
 
-# Create database tables automatically if they don't exist
-models.Base.metadata.create_all(bind=Engine)
+# 🌟 FIXED: Using lowercase engine here to create tables automatically
+models.Base.metadata.create_all(bind=engine)
 
 app = FastAPI(title="TravelOS")
 
@@ -30,7 +31,7 @@ def get_db():
 # --- OWNER DASHBOARD ---
 @app.get("/dashboard", response_class=HTMLResponse)
 def owner_dashboard(request: Request, db: Session = Depends(get_db)):
-    # 🌟 FIXED: Sorted by created_at column matching your models.py
+    # Sorted by created_at column matching your models.py
     trips = db.query(models.Trip).order_by(models.Trip.created_at.desc(), models.Trip.id.desc()).all()
     
     # Financial Matrix Calculations (Only for completed trips)
@@ -141,7 +142,7 @@ def owner_dashboard(request: Request, db: Session = Depends(get_db)):
     """
     
     for t in trips:
-        # 🌟 FIXED: Formats your database created_at timestamp into clean text (e.g., 03-Jun-2026)
+        # Formats your database created_at timestamp into clean text (e.g., 03-Jun-2026)
         formatted_date = t.created_at.strftime('%d-%b-%Y') if t.created_at else date.today().strftime('%d-%b-%Y')
         
         status_badge = '<span class="badge bg-success">Completed</span>' if t.status == "Completed" else '<span class="badge bg-warning text-dark">Active</span>'
@@ -278,29 +279,6 @@ def driver_portal(request: Request, db: Session = Depends(get_db)):
     """
     return HTMLResponse(content=html_content)
 
-@app.post("/driver-portal/complete-trip/{trip_id}")
-def complete_trip(
-    trip_id: int, 
-    end_km: float = Form(...), 
-    diesel_cost: float = Form(0.0), 
-    toll_cost: float = Form(0.0), 
-    diesel_litres: float = Form(0.0),
-    driver_commission: float = Form(0.0),
-    db: Session = Depends(get_db)
-):
-    trip = db.query(models.Trip).filter(models.Trip.id == trip_id).first()
-    if trip:
-        trip.end_km = end_km
-        trip.diesel_cost = diesel_cost
-        trip.toll_cost = toll_cost
-        trip.diesel_litres = diesel_litres
-        trip.driver_commission = driver_commission
-        trip.status = "Completed"
-        db.commit()
-    return RedirectResponse(url="/driver-portal", status_code=status.HTTP_303_SEE_OTHER)
-
-
-# --- AUTOMATIC MATPLOTLIB CHART GENERATOR ---
 @app.get("/analytics-chart.png")
 def get_analytics_chart(db: Session = Depends(get_db)):
     trips = db.query(models.Trip).filter(models.Trip.status == "Completed").all()
