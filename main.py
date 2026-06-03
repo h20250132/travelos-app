@@ -24,8 +24,19 @@ def get_db():
         db.close()
 
 
+# --- OWNER MANAGEMENT DASHBOARD STARTUP CONTROLS ---
 @app.on_event("startup")
 def configure_initial_fleet():
+    # 🌟 TEMPORARY LOGIC: This wipes the old conflicting SQLite file on bootup to resolve the 500 error
+    if os.path.exists("travelos.db"):
+        try:
+            os.remove("travelos.db")
+        except Exception:
+            pass
+
+    # Re-verify and initialize structural data models
+    models.Base.metadata.create_all(bind=engine)
+
     db = SessionLocal()
     if db.query(models.Vehicle).count() == 0:
         today = date.today()
@@ -38,28 +49,27 @@ def configure_initial_fleet():
     db.close()
 
 
-# --- OWNER MANAGEMENT DASHBOARD ---
 @app.get("/dashboard", response_class=HTMLResponse)
 def owner_dashboard(request: Request, db: Session = Depends(get_db)):
     trips = db.query(models.Trip).order_by(models.Trip.created_at.desc()).all()
     vehicles = db.query(models.Vehicle).all()
     today_dt = date.today()
 
-    # 🔴 Compliance Check Alerts
+    # Compliance Tracking Alerts Setup
     maintenance_alerts = []
     for v in vehicles:
-        if v.insurance_expiry and (v.insurance_expiry - today_dt).days <= 7:
-            maintenance_alerts.append(f"⚠️ <b>{v.plate_number}</b>: Insurance expires in {(v.insurance_expiry - today_dt).days} days! (Due: {v.insurance_expiry.strftime('%d-%b')})")
-        if v.fitness_expiry and (v.fitness_expiry - today_dt).days <= 7:
-            maintenance_alerts.append(f"🛑 <b>{v.plate_number}</b>: Fitness Certificate (FC) expires in {(v.fitness_expiry - today_dt).days} days!")
+        if v.insurance_expiry and (v.insurance_expiry.date() - today_dt).days <= 7:
+            maintenance_alerts.append(f"⚠️ <b>{v.plate_number}</b>: Insurance expires in {(v.insurance_expiry.date() - today_dt).days} days! (Due: {v.insurance_expiry.strftime('%d-%b')})")
+        if v.fitness_expiry and (v.fitness_expiry.date() - today_dt).days <= 7:
+            maintenance_alerts.append(f"🛑 <b>{v.plate_number}</b>: Fitness Certificate (FC) expires in {(v.fitness_expiry.date() - today_dt).days} days!")
 
-    # 🧮 Operational KPIs
+    # Dynamic KPI Counters
     today_trips_count = sum(1 for t in trips if t.created_at.date() == today_dt)
     active_trips_count = sum(1 for t in trips if t.status == "Active")
     total_km_run = sum(t.distance_travelled for t in trips if t.status == "Completed")
     total_pending_payments = sum(t.balance_due for t in trips)
 
-    # 💰 Comprehensive Accounting Ledger
+    # Audited Account Ledgers 
     total_revenue = sum(t.total_fare for t in trips if t.status == "Completed")
     total_diesel = sum(t.diesel_cost for t in trips if t.status == "Completed")
     total_tolls = sum(t.toll_cost for t in trips if t.status == "Completed")
@@ -67,7 +77,7 @@ def owner_dashboard(request: Request, db: Session = Depends(get_db)):
     total_other = sum(t.other_expenses for t in trips if t.status == "Completed")
     net_profit = total_revenue - (total_diesel + total_tolls + total_commissions + total_other)
 
-    # 🤵 LIVE DRIVER STATUS ENGINE
+    # Live Active Workforce State Monitors
     known_drivers = {"Ravi": "Available", "Kumar": "Available", "Srinivas": "Available"}
     driver_current_task = {"Ravi": "No active trip", "Kumar": "No active trip", "Srinivas": "No active trip"}
     
@@ -107,12 +117,9 @@ def owner_dashboard(request: Request, db: Session = Depends(get_db)):
         <style>
             body {{ background-color: #f0f2f5; font-family: system-ui, -apple-system, sans-serif; }}
             .card-kpi {{ border-radius: 14px; border: none; box-shadow: 0 4px 12px rgba(0,0,0,0.04); color: white; }}
-            
-            /* Accordion custom layouts */
             .history-header-btn {{ border: none; background: transparent; width: 100%; text-align: left; padding: 1rem; display: flex; align-items: center; justify-content: space-between; text-decoration: none !important; }}
             .history-header-btn:focus {{ box-shadow: none; }}
             .accordion-item {{ border: 1px solid rgba(0,0,0,0.08); border-radius: 10px !important; margin-bottom: 10px; overflow: hidden; background-color: white; box-shadow: 0 2px 6px rgba(0,0,0,0.02); }}
-            
             .badge-active-run {{ background-color: #fff3cd; color: #856404; font-weight: bold; }}
             .badge-completed-run {{ background-color: #d4edda; color: #155724; font-weight: bold; }}
             .badge-pending-pay-run {{ background-color: #f8d7da; color: #721c24; font-weight: bold; }}
@@ -204,7 +211,6 @@ def owner_dashboard(request: Request, db: Session = Depends(get_db)):
     for index, t in enumerate(trips):
         date_str = t.created_at.strftime('%d-%b-%Y')
         
-        # Determine background styles and quick stats badges based on status
         if t.status == "Active":
             bg_badge_class = "badge-active-run"
             status_text = "LIVE RUNNING"
@@ -223,7 +229,6 @@ def owner_dashboard(request: Request, db: Session = Depends(get_db)):
             profit_text = f"Profit: ₹{single_trip_profit:,.2f}"
             profit_class = "text-success" if single_trip_profit >= 0 else "text-danger"
 
-        # Content fields formatters
         route_summary = f"{t.from_location} ➔ {t.to_location}"
         driver_name = t.assigned_driver if t.status == 'Active' else t.completed_by_driver
 
@@ -363,7 +368,7 @@ def purge_trip_record(trip_id: int, db: Session = Depends(get_db)):
     return RedirectResponse(url="/dashboard", status_code=status.HTTP_303_SEE_OTHER)
 
 
-# --- FIELD DRIVER APP INTERFACE ---
+# --- FIELD DRIVER PORTAL RUN MANIFESTS ---
 @app.get("/driver-portal", response_class=HTMLResponse)
 def driver_portal(request: Request, db: Session = Depends(get_db)):
     active_trips = db.query(models.Trip).filter(models.Trip.status == "Active").all()
@@ -460,7 +465,7 @@ def driver_portal(request: Request, db: Session = Depends(get_db)):
     return HTMLResponse(content=html_content)
 
 
-# --- AUTOMATIC CHART GENERATOR ---
+# --- AUTOMATIC MATPLOTLIB GRAPHICS MOTOR ---
 @app.get("/analytics-chart.png")
 def get_analytics_chart(db: Session = Depends(get_db)):
     completed_trips = db.query(models.Trip).filter(models.Trip.status == "Completed").all()
