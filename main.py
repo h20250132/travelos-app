@@ -5,16 +5,14 @@ import matplotlib
 matplotlib.use('Agg')  # Prevents server crash on headless cloud environment
 import matplotlib.pyplot as plt
 
-from fastapi import FastAPI, Depends, Request, Form, status, BackgroundTasks
+from fastapi import FastAPI, Depends, Request, Form, status, HTTPException
 from fastapi.responses import HTMLResponse, RedirectResponse, StreamingResponse
-from fastapi.staticfiles import StaticFiles
 from sqlalchemy.orm import Session
 
 import models
-# 🌟 FIXED: Changed 'Engine' to 'engine' to match your database file exactly
 from database import engine, SessionLocal
 
-# 🌟 FIXED: Using lowercase engine here to create tables automatically
+# Create database tables automatically if they don't exist
 models.Base.metadata.create_all(bind=engine)
 
 app = FastAPI(title="TravelOS")
@@ -88,9 +86,13 @@ def owner_dashboard(request: Request, db: Session = Depends(get_db)):
             </div>
 
             <div class="card card-summary p-4 mb-4">
-                <h4 class="mb-3 text-secondary fw-bold">📌 Dispatch New Trip Assignment</h4>
+                <h4 class="mb-3 text-secondary fw-bold">📌 Dispatch Trip (Backdate Entry Allowed)</h4>
                 <form action="/dashboard/add-trip" method="POST">
                     <div class="row g-3">
+                        <div class="col-md-4">
+                            <label class="form-label fw-semibold">📅 Journey Date</label>
+                            <input type="date" name="manual_date" class="form-control" value="{date.today().strftime('%Y-%m-%d')}" required>
+                        </div>
                         <div class="col-md-4">
                             <label class="form-label fw-semibold">👤 Customer Name</label>
                             <input type="text" name="customer_name" class="form-control" required placeholder="Passenger Name">
@@ -116,7 +118,7 @@ def owner_dashboard(request: Request, db: Session = Depends(get_db)):
                             <input type="number" step="0.01" name="total_fare" class="form-control" required placeholder="Agreed Billing Amount">
                         </div>
                     </div>
-                    <button type="submit" class="btn btn-dark w-100 mt-3 py-2 fw-bold">🚀 Send Trip to Ravi's App</button>
+                    <button type="submit" class="btn btn-dark w-100 mt-3 py-2 fw-bold">🚀 Dispatch / Log Trip</button>
                 </form>
             </div>
 
@@ -136,15 +138,14 @@ def owner_dashboard(request: Request, db: Session = Depends(get_db)):
                                 <th>💰 Fare</th>
                                 <th>⛽ Diesel Cost</th>
                                 <th>📌 Status</th>
+                                <th>⚙️ Actions</th>
                             </tr>
                         </thead>
                         <tbody>
     """
     
     for t in trips:
-        # Formats your database created_at timestamp into clean text (e.g., 03-Jun-2026)
         formatted_date = t.created_at.strftime('%d-%b-%Y') if t.created_at else date.today().strftime('%d-%b-%Y')
-        
         status_badge = '<span class="badge bg-success">Completed</span>' if t.status == "Completed" else '<span class="badge bg-warning text-dark">Active</span>'
         route_display = f"{t.from_location} ➔ {t.to_location}" if (t.from_location or t.to_location) else "Not Specified"
         end_km_display = f"{t.end_km:.1f} km" if t.end_km else "-"
@@ -162,6 +163,11 @@ def owner_dashboard(request: Request, db: Session = Depends(get_db)):
                                 <td>₹{t.total_fare:,.2f}</td>
                                 <td>₹{t.diesel_cost:,.2f}</td>
                                 <td>{status_badge}</td>
+                                <td>
+                                    <form action="/dashboard/delete-trip/{t.id}" method="POST" style="display:inline;" onsubmit="return confirm('Are you sure you want to completely delete this trip entry?');">
+                                        <button type="submit" class="btn btn-sm btn-outline-danger py-0 px-2 fw-bold" title="Delete record permanently">Delete</button>
+                                    </form>
+                                </td>
                             </tr>
         """
         
@@ -177,8 +183,10 @@ def owner_dashboard(request: Request, db: Session = Depends(get_db)):
     return HTMLResponse(content=html_content)
 
 
+# --- ROUTE FOR ADDING / MANUALLY BACKDATING TRIPS ---
 @app.post("/dashboard/add-trip")
 def add_trip(
+    manual_date: str = Form(...),
     customer_name: str = Form(...), 
     customer_phone: str = Form(None),
     start_km: float = Form(...), 
@@ -187,6 +195,9 @@ def add_trip(
     total_fare: float = Form(...), 
     db: Session = Depends(get_db)
 ):
+    # Parse the manual calendar date selected by owner
+    parsed_date = datetime.strptime(manual_date, "%Y-%m-%d")
+    
     new_trip = models.Trip(
         customer_name=customer_name,
         customer_phone=customer_phone,
@@ -194,17 +205,28 @@ def add_trip(
         from_location=from_location,
         to_location=to_location,
         total_fare=total_fare,
-        status="Active"
+        status="Active",
+        created_at=parsed_date  # Sets the entry to the date you picked (e.g. June 1st)
     )
     db.add(new_trip)
     db.commit()
     return RedirectResponse(url="/dashboard", status_code=status.HTTP_303_SEE_OTHER)
 
 
-# --- DRIVER PORTAL (RAVI'S APP INTERFACE) ---
+# --- ROUTE FOR DELETING MISMANAGED ENTRIES ---
+@app.post("/dashboard/delete-trip/{trip_id}")
+def delete_trip(trip_id: int, db: Session = Depends(get_db)):
+    trip = db.query(models.Trip).filter(models.Trip.id == trip_id).first()
+    if not trip:
+        raise HTTPException(status_code=404, detail="Trip record not found")
+    db.delete(trip)
+    db.commit()
+    return RedirectResponse(url="/dashboard", status_code=status.HTTP_303_SEE_OTHER)
+
+
+# --- DRIVER PORTAL ---
 @app.get("/driver-portal", response_class=HTMLResponse)
 def driver_portal(request: Request, db: Session = Depends(get_db)):
-    # Filter out active trips specifically assigned for the vehicle route runs
     active_trips = db.query(models.Trip).filter(models.Trip.status == "Active").all()
     
     html_content = """
@@ -279,6 +301,29 @@ def driver_portal(request: Request, db: Session = Depends(get_db)):
     """
     return HTMLResponse(content=html_content)
 
+@app.post("/driver-portal/complete-trip/{trip_id}")
+def complete_trip(
+    trip_id: int, 
+    end_km: float = Form(...), 
+    diesel_cost: float = Form(0.0), 
+    toll_cost: float = Form(0.0), 
+    diesel_litres: float = Form(0.0),
+    driver_commission: float = Form(0.0),
+    db: Session = Depends(get_db)
+):
+    trip = db.query(models.Trip).filter(models.Trip.id == trip_id).first()
+    if trip:
+        trip.end_km = end_km
+        trip.diesel_cost = diesel_cost
+        trip.toll_cost = toll_cost
+        trip.diesel_litres = diesel_litres
+        trip.driver_commission = driver_commission
+        trip.status = "Completed"
+        db.commit()
+    return RedirectResponse(url="/driver-portal", status_code=status.HTTP_303_SEE_OTHER)
+
+
+# --- AUTOMATIC CHART GENERATOR ---
 @app.get("/analytics-chart.png")
 def get_analytics_chart(db: Session = Depends(get_db)):
     trips = db.query(models.Trip).filter(models.Trip.status == "Completed").all()
