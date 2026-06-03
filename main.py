@@ -69,18 +69,13 @@ def get_base_layout(content: str) -> str:
     </html>
     """
 
-# --- ROUTE TO DELIVER THE GRAPH IMAGE ON-THE-FLY ---
 @app.get("/analytics-chart.png")
 def get_analytics_chart(db: Session = Depends(get_db)):
     trips = db.query(models.Trip).filter(models.Trip.status == "Completed").all()
-    
-    # Initialize dictionary structure for data tracking
     monthly_data = {}
     
     for t in trips:
-        # Format dates nicely (e.g., "Jun 2026")
         month_str = t.created_at.strftime("%b %Y") if t.created_at else datetime.utcnow().strftime("%b %Y")
-        
         if month_str not in monthly_data:
             monthly_data[month_str] = {"revenue": 0.0, "expenses": 0.0, "trips": 0}
             
@@ -89,41 +84,41 @@ def get_analytics_chart(db: Session = Depends(get_db)):
         monthly_data[month_str]["expenses"] += trip_expenses
         monthly_data[month_str]["trips"] += 1
 
-    # Default placeholder view if database has no completed entries yet
-    if not monthly_data:
-        current_month = datetime.utcnow().strftime("%b %Y")
-        monthly_data[current_month] = {"revenue": 0.0, "expenses": 0.0, "trips": 0}
-
-    months = list(monthly_data.keys())
-    revenues = [monthly_data[m]["revenue"] for m in months]
-    expenses = [monthly_data[m]["expenses"] for m in months]
-
-    # Generate visual figure graph plot
     fig, ax1 = plt.subplots(figsize=(8, 4))
-    
-    width = 0.35
-    x = range(len(months))
-    
-    # Draw bars side-by-side
-    ax1.bar([i - width/2 for i in x], revenues, width, label='Revenue (₹)', color='#0d6efd')
-    ax1.bar([i + width/2 for i in x], expenses, width, label='Expenses (₹)', color='#dc3545')
-    
-    ax1.set_xlabel('Months', fw='bold')
-    ax1.set_ylabel('Amount in Rupees (₹)', fw='bold')
-    ax1.set_title('Monthly Financial Business Analytics', fontsize=14, fw='bold', pad=15)
-    ax1.set_xticks(x)
-    ax1.set_xticklabels(months)
-    ax1.legend(loc='upper left')
-    ax1.grid(True, linestyle='--', alpha=0.5)
+
+    # If database is completely empty, draw a friendly message instead of crashing
+    if not monthly_data:
+        ax1.text(0.5, 0.5, "No completed trip data found yet!\nLog your first trip to view trends.", 
+                 horizontalalignment='center', verticalalignment='center', 
+                 fontsize=12, color='#6c757d', weight='bold')
+        ax1.set_xticks([])
+        ax1.set_yticks([])
+        ax1.set_title('Monthly Performance Trends', fontsize=12, fontweight='bold', pad=10)
+    else:
+        months = list(monthly_data.keys())
+        revenues = [monthly_data[m]["revenue"] for m in months]
+        expenses = [monthly_data[m]["expenses"] for m in months]
+
+        width = 0.35
+        x = range(len(months))
+        
+        ax1.bar([i - width/2 for i in x], revenues, width, label='Revenue (₹)', color='#0d6efd')
+        ax1.bar([i + width/2 for i in x], expenses, width, label='Expenses (₹)', color='#dc3545')
+        
+        ax1.set_xlabel('Months', fontweight='bold')
+        ax1.set_ylabel('Amount (₹)', fontweight='bold')
+        ax1.set_title('Monthly Performance Trends', fontsize=12, fontweight='bold', pad=10)
+        ax1.set_xticks(x)
+        ax1.set_xticklabels(months)
+        ax1.legend(loc='upper left')
+        ax1.grid(True, linestyle='--', alpha=0.5)
     
     plt.tight_layout()
     
-    # Store image securely in local memory stream to transmit back
     buf = io.BytesIO()
     plt.savefig(buf, format='png', dpi=150)
     buf.seek(0)
     plt.close(fig)
-    
     return Response(content=buf.getvalue(), media_type="image/png")
 
 @app.get("/")
