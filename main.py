@@ -25,16 +25,10 @@ def get_db():
 
 
 # --- OWNER MANAGEMENT DASHBOARD STARTUP CONTROLS ---
+# --- OWNER MANAGEMENT DASHBOARD STARTUP CONTROLS ---
 @app.on_event("startup")
 def configure_initial_fleet():
-    # 🌟 TEMPORARY LOGIC: This wipes the old conflicting SQLite file on bootup to resolve the 500 error
-    if os.path.exists("travelos.db"):
-        try:
-            os.remove("travelos.db")
-        except Exception:
-            pass
-
-    # Re-verify and initialize structural data models
+    # 🌟 CLEANED: Pointing securely to the new /tmp/ paths automatically
     models.Base.metadata.create_all(bind=engine)
 
     db = SessionLocal()
@@ -47,7 +41,6 @@ def configure_initial_fleet():
         ])
         db.commit()
     db.close()
-
 
 @app.get("/dashboard", response_class=HTMLResponse)
 def owner_dashboard(request: Request, db: Session = Depends(get_db)):
