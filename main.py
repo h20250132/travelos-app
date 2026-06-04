@@ -3,13 +3,82 @@ import csv
 from datetime import datetime, date, timedelta
 from fastapi import FastAPI, Depends, Request, Form, status, HTTPException
 from fastapi.responses import HTMLResponse, RedirectResponse, StreamingResponse
-from sqlalchemy.orm import Session
+from sqlalchemy import create_engine, Column, Integer, String, Float, DateTime, ForeignKey, Date
+from sqlalchemy.ext.declarative import declarative_base
+from sqlalchemy.orm import sessionmaker, Session
 
-import models
-from database import engine, SessionLocal
+# ==========================================
+# 1. DATABASE CONFIGURATION & ORM ARCHITECTURE
+# ==========================================
+DATABASE_URL = "sqlite:////tmp/travelos.db"
 
-models.Base.metadata.create_all(bind=engine)
+engine = create_engine(DATABASE_URL, connect_args={"check_same_thread": False})
+SessionLocal = sessionmaker(autocommit=False, autoflush=False, bind=engine)
+Base = declarative_base()
 
+class Vehicle(Base):
+    __tablename__ = "vehicles"
+    id = Column(Integer, primary_key=True, index=True)
+    plate_number = Column(String, unique=True, index=True, nullable=False)
+    vehicle_name = Column(String, nullable=False)
+    current_odometer = Column(Float, default=0.0)
+    
+    # Maintenance Tracking Fields
+    oil_change_km = Column(Float, default=0.0)
+    tyre_change_km = Column(Float, default=0.0)
+    last_service_date = Column(Date, nullable=True)
+    insurance_expiry = Column(Date, nullable=True)
+
+class Trip(Base):
+    __tablename__ = "trips"
+    id = Column(Integer, primary_key=True, index=True)
+    created_at = Column(DateTime, default=datetime.utcnow, nullable=False)
+    trip_date = Column(Date, default=datetime.utcnow, nullable=False)
+    vehicle_plate = Column(String, ForeignKey("vehicles.plate_number"), nullable=False)
+    
+    assigned_driver = Column(String, nullable=False)       
+    completed_by_driver = Column(String, nullable=True)     
+    
+    customer_name = Column(String, nullable=False)
+    customer_phone = Column(String, nullable=False)
+    from_location = Column(String, nullable=False)
+    to_location = Column(String, nullable=False)
+    
+    start_km = Column(Float, nullable=False)
+    end_km = Column(Float, nullable=True)
+    
+    total_fare = Column(Float, default=0.0)                 
+    amount_received = Column(Float, default=0.0)            
+    balance_due = Column(Float, default=0.0)                
+    
+    diesel_cost = Column(Float, default=0.0)
+    diesel_litres = Column(Float, default=0.0)
+    toll_cost = Column(Float, default=0.0)
+    driver_bata = Column(Float, default=0.0)
+    driver_commission = Column(Float, default=0.0)
+    other_expenses = Column(Float, default=0.0)
+    expense_note = Column(String, nullable=True)            
+    
+    status = Column(String, default="Active")                
+    payment_status = Column(String, default="Pending")     
+
+    @property
+    def distance_travelled(self) -> float:
+        if self.end_km and self.start_km:
+            return max(0.0, self.end_km - self.start_km)
+        return 0.0
+
+    @property
+    def net_profit(self) -> float:
+        if self.status != "Completed":
+            return 0.0
+        return self.total_fare - (self.diesel_cost + self.toll_cost + self.driver_bata + self.driver_commission + self.other_expenses)
+
+Base.metadata.create_all(bind=engine)
+
+# ==========================================
+# 2. FASTAPI APPLICATION ROUTING & BUSINESS LOGIC
+# ==========================================
 app = FastAPI(title="TravelOS Pro")
 
 def get_db():
@@ -22,9 +91,9 @@ def get_db():
 @app.on_event("startup")
 def configure_initial_fleet():
     db = SessionLocal()
-    if db.query(models.Vehicle).count() == 0:
+    if db.query(Vehicle).count() == 0:
         db.add(
-            models.Vehicle(
+            Vehicle(
                 plate_number="AP XX XX 8118", 
                 vehicle_name="Toyota Etios", 
                 current_odometer=125430.0,
@@ -36,6 +105,11 @@ def configure_initial_fleet():
         )
         db.commit()
     db.close()
+
+# Root Redirector Layer
+@app.get("/")
+def root_redirect():
+    return RedirectResponse(url="/dashboard", status_code=status.HTTP_303_SEE_OTHER)
 
 # --- OWNER DASHBOARD ---
 @app.get("/dashboard", response_class=HTMLResponse)
@@ -49,27 +123,23 @@ def owner_dashboard(request: Request, selected_date_str: str = None, db: Session
     else:
         view_date = today
 
-    trips = db.query(models.Trip).order_by(models.Trip.created_at.desc()).all()
-    vehicles = db.query(models.Vehicle).all()
+    trips = db.query(Trip).order_by(Trip.created_at.desc()).all()
+    vehicles = db.query(Vehicle).all()
 
     total_revenue = sum(t.total_fare for t in trips if t.status == "Completed")
     total_expenses = sum((t.diesel_cost + t.toll_cost + t.driver_bata + t.driver_commission + t.other_expenses) for t in trips if t.status == "Completed")
     net_profit = sum(t.net_profit for t in trips if t.status == "Completed")
     total_pending_balance = sum(t.balance_due for t in trips)
 
-    # Outstanding customer collections list matching layout adjustments
-    pending_trips = db.query(models.Trip).filter(models.Trip.balance_due > 0).all()
+    pending_trips = db.query(Trip).filter(Trip.balance_due > 0).all()
     pending_rows_html = "".join([
         f"<tr><td>{t.customer_name}</td><td class='text-danger fw-bold'>₹{t.balance_due:,.2f}</td><td>{t.vehicle_plate}</td></tr>" 
         for t in pending_trips
     ]) or "<tr><td colspan='3' class='text-muted text-center'>No outstanding balances</td></tr>"
 
-    # Dynamic Odometer JS Mapping
     odo_mapping_js = "const odoMap = {" + ",".join([f"'{v.plate_number}': {v.current_odometer}" for v in vehicles]) + "};"
-
     vehicle_options = "".join([f'<option value="{v.plate_number}">{v.vehicle_name} ({v.plate_number})</option>' for v in vehicles])
     
-    # Maintenance Panel List Markup
     maintenance_rows_html = "".join([
         f"""<tr>
             <td><b>{v.vehicle_name}</b><br><small class='text-muted'>{v.plate_number}</small></td>
@@ -81,9 +151,7 @@ def owner_dashboard(request: Request, selected_date_str: str = None, db: Session
         </tr>""" for v in vehicles
     ])
 
-    # Calendar Core Processing Engine
-    active_date_trips = db.query(models.Trip).filter(models.Trip.trip_date == view_date).all()
-    
+    active_date_trips = db.query(Trip).filter(Trip.trip_date == view_date).all()
     calendar_fleet_html = ""
     for v in vehicles:
         matching_trip = next((t for t in active_date_trips if t.vehicle_plate == v.plate_number), None)
@@ -96,7 +164,6 @@ def owner_dashboard(request: Request, selected_date_str: str = None, db: Session
     ravi_trips = [t for t in active_date_trips if t.assigned_driver.lower() == "ravi"]
     ravi_status = f"<span class='badge bg-danger'>On Duty ({ravi_trips[0].vehicle_plate})</span>" if ravi_trips else "<span class='badge bg-secondary'>Off Duty / Available</span>"
 
-    # Trip logs loops containing complete dynamic modular breakdowns
     trip_logs_html = ""
     for t in trips:
         date_str = t.trip_date.strftime('%d-%b-%Y')
@@ -173,7 +240,7 @@ def owner_dashboard(request: Request, selected_date_str: str = None, db: Session
         <script src="https://cdn.jsdelivr.net/npm/bootstrap@5.3.0/dist/js/bootstrap.bundle.min.js"></script>
         <script>
             {odo_mapping_js}
-            def updateOdometerDefault() {{
+            function updateOdometerDefault() {{
                 const selectedPlate = document.getElementById('vehicle_select').value;
                 if(odoMap[selectedPlate] !== undefined) {{
                     document.getElementById('start_km_input').value = odoMap[selectedPlate];
@@ -205,7 +272,7 @@ def owner_dashboard(request: Request, selected_date_str: str = None, db: Session
             <div class="row g-4 mb-5">
                 <div class="col-md-4">
                     <div class="card p-3 shadow-sm bg-white border-0 h-100">
-                        <h6 class="fw-bold text-secondary mb-3">📋 Customer Balances Breakdown</h6>
+                        <h6 class="fw-bold text-secondary mb-3">📋 Customer Balances</h6>
                         <div class="table-responsive">
                             <table class="table table-sm table-hover align-middle small">
                                 <thead class="table-light"><tr><th>Customer</th><th>Pending Due</th><th>Vehicle</th></tr></thead>
@@ -224,13 +291,13 @@ def owner_dashboard(request: Request, selected_date_str: str = None, db: Session
                         </form>
                         <div class="row">
                             <div class="col-md-6">
-                                <small class="text-muted fw-bold d-block mb-2 text-uppercase">Fleet Allocations ({view_date.strftime('%d-%b')})</small>
+                                <small class="text-muted fw-bold d-block mb-2 text-uppercase">Fleet Allocations</small>
                                 <ul class="list-group list-group-flush small">{calendar_fleet_html}</ul>
                             </div>
                             <div class="col-md-6 border-start">
                                 <small class="text-muted fw-bold d-block mb-2 text-uppercase">Driver Attendance Profile</small>
                                 <div class="p-2 border rounded bg-light d-flex justify-content-between align-items-center small">
-                                    <span><b>Driver Ravi</b> ({view_date.strftime('%d-%b')})</span>
+                                    <span><b>Driver Ravi</b></span>
                                     {ravi_status}
                                 </div>
                             </div>
@@ -288,7 +355,7 @@ def owner_dashboard(request: Request, selected_date_str: str = None, db: Session
                             <input type="date" name="trip_date" value="{today.strftime('%Y-%m-%d')}" class="form-control" required>
                         </div>
                     </div>
-                    <button type="submit" class="btn btn-dark w-100 mt-4 py-2 fw-bold text-uppercase tracking-wider">DISPATCH OPERATIONAL JOURNEY</button>
+                    <button type="submit" class="btn btn-dark w-100 mt-4 py-2 fw-bold text-uppercase">DISPATCH OPERATIONAL JOURNEY</button>
                 </form>
             </div>
 
@@ -303,7 +370,7 @@ def owner_dashboard(request: Request, selected_date_str: str = None, db: Session
                                 <th>Last Oil Change</th>
                                 <th>Last Tyre Change</th>
                                 <th>Last Bench Service</th>
-                                <th>Insurance Expiry Boundary</th>
+                                <th>Insurance Expiry</th>
                             </tr>
                         </thead>
                         <tbody>{maintenance_rows_html}</tbody>
@@ -354,7 +421,7 @@ def process_new_dispatch(
     trip_date: str = Form(...), db: Session = Depends(get_db)
 ):
     parsed_date = datetime.strptime(trip_date, "%Y-%m-%d").date()
-    new_trip = models.Trip(
+    new_trip = Trip(
         vehicle_plate=vehicle_plate, assigned_driver=assigned_driver,
         customer_name=customer_name, customer_phone=customer_phone,
         start_km=start_km, from_location=from_location, to_location=to_location,
@@ -368,7 +435,7 @@ def process_new_dispatch(
 
 @app.post("/dashboard/settle-payment/{trip_id}")
 def reconcile_trip_payment(trip_id: int, amt: float = Form(...), db: Session = Depends(get_db)):
-    trip = db.query(models.Trip).filter(models.Trip.id == trip_id).first()
+    trip = db.query(Trip).filter(Trip.id == trip_id).first()
     if trip:
         trip.amount_received += amt
         trip.balance_due = max(0.0, trip.total_fare - trip.amount_received)
@@ -380,7 +447,7 @@ def reconcile_trip_payment(trip_id: int, amt: float = Form(...), db: Session = D
 
 @app.post("/dashboard/delete-trip/{trip_id}")
 def purge_trip_record(trip_id: int, db: Session = Depends(get_db)):
-    trip = db.query(models.Trip).filter(models.Trip.id == trip_id).first()
+    trip = db.query(Trip).filter(Trip.id == trip_id).first()
     if trip:
         db.delete(trip)
         db.commit()
@@ -392,7 +459,7 @@ def export_excel_csv_reports(start: str, end: str, db: Session = Depends(get_db)
     start_date = datetime.strptime(start, "%Y-%m-%d").date()
     end_date = datetime.strptime(end, "%Y-%m-%d").date()
     
-    trips = db.query(models.Trip).filter(models.Trip.trip_date >= start_date, models.Trip.trip_date <= end_date).all()
+    trips = db.query(Trip).filter(Trip.trip_date >= start_date, Trip.trip_date <= end_date).all()
     
     output = io.StringIO()
     writer = csv.writer(output)
@@ -417,10 +484,10 @@ def export_excel_csv_reports(start: str, end: str, db: Session = Depends(get_db)
     )
 
 
-# --- DRIVER FIELD PORTAL REDACTED SECURE VIEW ---
+# --- DRIVER FIELD PORTAL SECURE VIEW ---
 @app.get("/driver-portal", response_class=HTMLResponse)
 def driver_portal(request: Request, db: Session = Depends(get_db)):
-    active_trips = db.query(models.Trip).filter(models.Trip.status == "Active").all()
+    active_trips = db.query(Trip).filter(Trip.status == "Active").all()
     
     html_content = """
     <!DOCTYPE html>
@@ -440,15 +507,15 @@ def driver_portal(request: Request, db: Session = Depends(get_db)):
         </nav>
 
         <div class="container py-2">
-            <div class="alert alert-info border-0 p-3 mb-4 bg-gradient text-dark">
-                <strong>🔒 Secure Portal View Restricted:</strong> Revenue records, performance analytics profiles, ledger charts, and corporate asset summaries are restricted from view.
+            <div class="alert alert-info border-0 p-3 mb-4 text-dark">
+                <strong>🔒 Portal View Restricted:</strong> Revenue records, performance analytics profiles, ledger charts, and corporate asset summaries are hidden.
             </div>
             <h4 class="mb-4 text-warning fw-bold">Active Journeys Log Entry</h4>
     """
     
     if not active_trips:
         html_content += """
-            <div class="alert alert-secondary text-center p-5 bg-transparent border-dashed">
+            <div class="alert alert-secondary text-center p-5 bg-transparent border">
                 <p class="mb-0 text-muted">No active transport operations found.</p>
             </div>
         """
@@ -460,10 +527,10 @@ def driver_portal(request: Request, db: Session = Depends(get_db)):
                     <h5 class="card-title text-warning fw-bold">Vehicle Unit Plate: {t.vehicle_plate}</h5>
                     <p class="mb-1 opacity-75">Customer Profile: {t.customer_name} ({t.customer_phone})</p>
                     <p class="mb-1 opacity-75">Route Vectors: {t.from_location} to {t.to_location}</p>
-                    <p class="mb-3 text-warning fs-6"><b>Initial Dispatch Odometer: {t.start_km:.1f} KM</b></p>
+                    <p class="mb-3 text-warning fs-6"><b>Initial Odometer: {t.start_km:.1f} KM</b></p>
                     
                     <form action="/driver-portal/complete-trip/{t.id}" method="POST" class="p-3 border rounded bg-dark border-secondary">
-                        <h6 class="text-warning border-bottom border-secondary pb-2 mb-3">Complete Terminal Operational Metric Sign-off</h6>
+                        <h6 class="text-warning border-bottom border-secondary pb-2 mb-3">Complete Operational Metric Sign-off</h6>
                         
                         <div class="mb-2">
                             <label class="form-label small text-white-50">Confirm Operating Driver Name</label>
@@ -471,13 +538,13 @@ def driver_portal(request: Request, db: Session = Depends(get_db)):
                         </div>
 
                         <div class="mb-2">
-                            <label class="form-label small text-warning fw-bold">Closing Terminal Odometer Verification (KM) *</label>
+                            <label class="form-label small text-warning fw-bold">Closing Odometer Verification (KM) *</label>
                             <input type="number" step="0.1" name="end_km" class="form-control form-control-sm bg-warning text-dark fw-bold" required min="{t.start_km + 0.1}">
                         </div>
 
                         <div class="row g-2 mb-2">
                             <div class="col-6">
-                                <label class="form-label small text-white-50">Diesel Financial Cost (₹)</label>
+                                <label class="form-label small text-white-50">Diesel Cost (₹)</label>
                                 <input type="number" step="0.01" name="diesel_cost" class="form-control form-control-sm" value="0">
                             </div>
                             <div class="col-6">
@@ -491,7 +558,7 @@ def driver_portal(request: Request, db: Session = Depends(get_db)):
                                 <input type="number" step="0.01" name="toll_cost" class="form-control form-control-sm" value="0">
                             </div>
                             <div class="col-4">
-                                <label class="form-label small text-white-50">Driver Daily Bata (₹)</label>
+                                <label class="form-label small text-white-50">Driver Bata (₹)</label>
                                 <input type="number" step="0.01" name="driver_bata" class="form-control form-control-sm" value="0">
                             </div>
                             <div class="col-4">
@@ -500,14 +567,14 @@ def driver_portal(request: Request, db: Session = Depends(get_db)):
                             </div>
                         </div>
                         <div class="mb-3">
-                            <label class="form-label small text-white-50">Supplementary Ledger Costs</label>
+                            <label class="form-label small text-white-50">Supplementary Costs</label>
                             <div class="input-group input-group-sm">
                                 <input type="number" step="0.01" name="other_expenses" class="form-control" value="0" style="max-width:30%;">
-                                <input type="text" name="expense_note" class="form-control" placeholder="Operational cost description notation">
+                                <input type="text" name="expense_note" class="form-control" placeholder="Notation">
                             </div>
                         </div>
 
-                        <button type="submit" class="btn btn-warning btn-sm w-100 fw-bold text-uppercase py-2 text-dark">SAVE METRIC RECORD AND CLOSE JOURNEY INSTANCE</button>
+                        <button type="submit" class="btn btn-warning btn-sm w-100 fw-bold py-2 text-dark">SAVE RECORD AND CLOSE JOURNEY</button>
                     </form>
                 </div>
             </div>
@@ -529,9 +596,9 @@ def driver_complete_trip(
     other_expenses: float = Form(0.0), expense_note: str = Form(None),
     db: Session = Depends(get_db)
 ):
-    trip = db.query(models.Trip).filter(models.Trip.id == trip_id).first()
+    trip = db.query(Trip).filter(Trip.id == trip_id).first()
     if not trip:
-        raise HTTPException(status_code=404, detail="Target instance identifier matching error.")
+        raise HTTPException(status_code=404, detail="Target instance matching error.")
         
     trip.completed_by_driver = completed_by_driver
     trip.end_km = end_km
@@ -544,8 +611,7 @@ def driver_complete_trip(
     trip.expense_note = expense_note
     trip.status = "Completed"
     
-    # Update the vehicle ledger's current global odometer position context
-    vehicle = db.query(models.Vehicle).filter(models.Vehicle.plate_number == trip.vehicle_plate).first()
+    vehicle = db.query(Vehicle).filter(Vehicle.plate_number == trip.vehicle_plate).first()
     if vehicle and end_km > vehicle.current_odometer:
         vehicle.current_odometer = end_km
 
