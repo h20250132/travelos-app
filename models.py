@@ -1,4 +1,4 @@
-from sqlalchemy import Column, Integer, String, Float, DateTime, ForeignKey
+from sqlalchemy import Column, Integer, String, Float, DateTime, ForeignKey, Date
 from database import Base
 from datetime import datetime
 
@@ -8,11 +8,18 @@ class Vehicle(Base):
     plate_number = Column(String, unique=True, index=True, nullable=False)
     vehicle_name = Column(String, nullable=False)
     current_odometer = Column(Float, default=0.0)
+    
+    # Maintenance Tracking
+    oil_change_km = Column(Float, default=0.0)
+    tyre_change_km = Column(Float, default=0.0)
+    last_service_date = Column(Date, nullable=True)
+    insurance_expiry = Column(Date, nullable=True)
 
 class Trip(Base):
     __tablename__ = "trips"
     id = Column(Integer, primary_key=True, index=True)
     created_at = Column(DateTime, default=datetime.utcnow, nullable=False)
+    trip_date = Column(Date, default=datetime.utcnow, nullable=False)
     vehicle_plate = Column(String, ForeignKey("vehicles.plate_number"), nullable=False)
     
     assigned_driver = Column(String, nullable=False)       
@@ -33,11 +40,12 @@ class Trip(Base):
     diesel_cost = Column(Float, default=0.0)
     diesel_litres = Column(Float, default=0.0)
     toll_cost = Column(Float, default=0.0)
+    driver_bata = Column(Float, default=0.0)
     driver_commission = Column(Float, default=0.0)
     other_expenses = Column(Float, default=0.0)
     expense_note = Column(String, nullable=True)            
     
-    status = Column(String, default="Active")               
+    status = Column(String, default="Active")                
     payment_status = Column(String, default="Pending")     
 
     @property
@@ -45,3 +53,9 @@ class Trip(Base):
         if self.end_km and self.start_km:
             return max(0.0, self.end_km - self.start_km)
         return 0.0
+
+    @property
+    def net_profit(self) -> float:
+        if self.status != "Completed":
+            return 0.0
+        return self.total_fare - (self.diesel_cost + self.toll_cost + self.driver_bata + self.driver_commission + self.other_expenses)
